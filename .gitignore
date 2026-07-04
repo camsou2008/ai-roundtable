@@ -1,0 +1,10 @@
+.DS_Store
+.env
+.env.*
+node_modules/
+*.log
+
+# Existing local files that are unrelated to this app.
+/hermes-architecture.md
+/launchagents/
+/scripts/
