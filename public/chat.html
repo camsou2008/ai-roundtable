@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>圆桌 · 聊天室</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Sidebar -->
+    <aside class="sidebar" aria-label="房间列表">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true">圆</div>
+        <div>
+          <strong>圆桌</strong>
+          <span>Multi-AI discussion</span>
+        </div>
+      </div>
+
+      <div class="sidebar-actions">
+        <span class="sidebar-user" id="sidebar-user"></span>
+        <a href="#" id="change-pwd-link" style="color:var(--muted);font-size:11px">密码</a>
+        <a href="/admin" class="admin-link" id="admin-link" style="display:none">管理</a>
+        <a href="#" id="logout-link">退出</a>
+      </div>
+
+      <div class="sidebar-label">我的房间</div>
+      <button class="sidebar-add-room" id="create-room-btn" type="button">＋ 创建房间</button>
+      <nav class="room-list" id="room-list" aria-label="房间列表"></nav>
+
+      <div class="connection-panel">
+        <div class="connection-title">AI Agent 状态</div>
+        <div id="agent-status-list">
+          <div class="connection-row"><span class="status-dot" id="dummy-dot"></span><span>加载中...</span></div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <!-- Main -->
+    <main class="main-stage">
+      <header class="room-header">
+        <button class="mobile-menu" id="mobile-menu" type="button" aria-label="打开房间列表">☰</button>
+        <div class="room-heading">
+          <div class="room-kicker"><span class="live-dot"></span><span id="room-kicker-text">讨论中</span></div>
+          <h1 id="room-title">请选择一个房间</h1>
+        </div>
+        <div class="participant-stack" id="participant-stack"></div>
+        <span class="online-count" id="online-count"></span>
+      </header>
+
+      <section class="conversation" id="conversation">
+        <div class="empty-state">
+          <div class="brand-mark" aria-hidden="true">圆</div>
+          <h2>欢迎回到圆桌</h2>
+          <p>选择左侧一个房间，开始多人多 AI 的讨论。</p>
+        </div>
+      </section>
+
+      <footer class="composer-wrap" id="composer-wrap" style="display:none">
+        <div class="composer">
+          <div class="target-tabs" role="group" aria-label="选择发言对象">
+            <button class="target-tab active" type="button" data-target="all">@ 全体</button>
+          </div>
+          <textarea id="message-input" rows="1" maxlength="12000"
+            placeholder="说点什么…" aria-label="聊天消息"></textarea>
+          <div class="composer-bottom">
+            <span>Enter 发送 · Shift + Enter 换行</span>
+            <button class="send-button" id="send-button" type="button" aria-label="发送消息">发送 ↗</button>
+          </div>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <template id="message-template">
+    <article class="message">
+      <div class="message-avatar avatar"></div>
+      <div class="message-content">
+        <div class="message-meta">
+          <strong></strong>
+          <time></time>
+        </div>
+        <div class="message-text"></div>
+      </div>
+    </article>
+  </template>
+
+  <!-- Create Room Dialog -->
+  <dialog id="create-room-dialog">
+    <form method="dialog">
+      <h2>创建房间</h2>
+      <label>房间名称 <input id="new-room-name-chat" maxlength="60" required placeholder="例如：AI 与未来" /></label>
+      <label>话题（可选）<input id="new-room-topic-chat" maxlength="120" placeholder="讨论的主题" /></label>
+      <div class="form-section">
+        <div class="form-section-title">添加 AI Agent（可选）</div>
+        <div id="create-room-agents" class="create-room-agents"></div>
+      </div>
+      <div class="dialog-actions">
+        <button class="secondary-button" id="create-room-cancel" type="button">取消</button>
+        <button class="primary-button" id="create-room-save" type="button">创建</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Add Agent Dialog -->
+  <dialog id="add-agent-dialog">
+    <form method="dialog">
+      <h2>添加 AI Agent</h2>
+      <p style="color:var(--muted);font-size:13px;margin:-10px 0 16px">选择要添加到房间的 Agent</p>
+      <div id="add-agent-rooms-list" class="add-agent-rooms-list"></div>
+      <div class="dialog-actions">
+        <button class="secondary-button" id="add-agent-cancel" type="button">取消</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Change Password Dialog -->
+  <dialog id="change-pwd-dialog">
+    <form method="dialog">
+      <h2>修改密码</h2>
+      <label>当前密码 <input id="pwd-old" type="password" required /></label>
+      <label>新密码（至少 6 位）<input id="pwd-new" type="password" minlength="6" required /></label>
+      <div id="pwd-error" style="color:var(--coral);font-size:12px;min-height:18px"></div>
+      <div class="dialog-actions">
+        <button class="secondary-button" id="pwd-cancel" type="button">取消</button>
+        <button class="primary-button" id="pwd-save" type="button">修改</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    // ── State ──
+    let currentUser = null;
+    let ws = null;
+    let currentRoomId = null;
+    let rooms = [];
+    let roomAgents = {};
+    let onlineUsers = new Map();
+    let pending = false;
+
+    const roomList = document.getElementById('room-list');
+    const conversation = document.getElementById('conversation');
+    const roomTitle = document.getElementById('room-title');
+    const roomKickerText = document.getElementById('room-kicker-text');
+    const input = document.getElementById('message-input');
+    const sendButton = document.getElementById('send-button');
+    const composerWrap = document.getElementById('composer-wrap');
+    const messageTemplate = document.getElementById('message-template');
+    const sidebar = document.querySelector('.sidebar');
+    const participantStack = document.getElementById('participant-stack');
+    const onlineCount = document.getElementById('online-count');
+    const targetTabs = document.querySelector('.target-tabs');
+
+    // ── Auth check ──
+    fetch('/api/auth/me')
+      .then(res => {
+        if (!res.ok) { window.location.href = '/login'; return; }
+        return res.json();
+      })
+      .then(user => {
+        if (!user) return;
+        currentUser = user;
+        document.getElementById('sidebar-user').textContent = user.username;
+        if (user.role === 'admin') document.getElementById('admin-link').style.display = 'inline';
+        loadRooms();
+        checkAgents();
+      })
+      .catch(() => { window.location.href = '/login'; });
+
+    // ── Logout ──
+    document.getElementById('logout-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      fetch('/api/auth/logout', { method: 'POST' }).then(() => { window.location.href = '/login'; });
+    });
+
+    // ── Load rooms ──
+    async function loadRooms() {
+      try {
+        const res = await fetch('/api/rooms');
+        if (!res.ok) return;
+        rooms = await res.json();
+        renderRooms();
+        if (rooms.length > 0 && !currentRoomId) {
+          switchRoom(rooms[0].id);
+        }
+      } catch (err) { console.error('加载房间失败', err); }
+    }
+
+    function renderRooms() {
+      roomList.replaceChildren();
+      for (const room of rooms) {
+        const wrap = document.createElement('div');
+        wrap.className = 'room-item-wrap';
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = room.name;
+        btn.className = 'room-btn' + (room.id === currentRoomId ? ' active' : '');
+        btn.addEventListener('click', () => switchRoom(room.id));
+
+        const addAgentBtn = document.createElement('button');
+        addAgentBtn.type = 'button';
+        addAgentBtn.className = 'room-add-agent';
+        addAgentBtn.textContent = '＋';
+        addAgentBtn.title = '添加 Agent 到该房间';
+        addAgentBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openAddAgentDialog(room.id, room.name);
+        });
+
+        wrap.append(btn, addAgentBtn);
+        roomList.append(wrap);
+      }
+    }
+
+    // ── Check agents ──
+    async function checkAgents() {
+      try {
+        const res = await fetch('/api/agents/check');
+        if (!res.ok) return;
+        const status = await res.json();
+        renderAgentStatus(status);
+      } catch {}
+    }
+
+    function renderAgentStatus(status) {
+      const list = document.getElementById('agent-status-list');
+      list.replaceChildren();
+      for (const [name, info] of Object.entries(status)) {
+        const row = document.createElement('div');
+        row.className = 'connection-row';
+        row.innerHTML = `
+          <span class="status-dot ${info.online ? 'online' : 'offline'}"></span>
+          <span style="text-transform:capitalize">${name}</span>
+          <small>${info.online ? info.version : '未连接'}</small>
+        `;
+        list.append(row);
+      }
+    }
+
+    // ── Switch room ──
+    async function switchRoom(roomId) {
+      if (ws) {
+        ws.send(JSON.stringify({ type: 'leave' }));
+      }
+      currentRoomId = roomId;
+      renderRooms();
+
+      const room = rooms.find(r => r.id === roomId);
+      if (room) {
+        roomTitle.textContent = room.name;
+        roomKickerText.textContent = room.topic || '讨论中';
+      }
+
+      composerWrap.style.display = 'block';
+      conversation.replaceChildren(createTypingBubble('系统', '加入房间中...'));
+      input.disabled = true;
+      sendButton.disabled = true;
+
+      // Load room agents
+      try {
+        const res = await fetch(`/api/rooms/${roomId}/agents`);
+        roomAgents[roomId] = await res.json();
+      } catch { roomAgents[roomId] = []; }
+
+      renderTargetTabs(roomId);
+      connectWebSocket(roomId);
+    }
+
+    function renderTargetTabs(roomId) {
+      targetTabs.replaceChildren();
+      const agents = roomAgents[roomId] || [];
+      const allTargets = [{ type: 'all', label: '@ 全体' }, ...agents.map(a => ({ type: a.command, label: `@ ${a.name}` }))];
+      allTargets.forEach((t, i) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `target-tab${i === 0 ? ' active' : ''}`;
+        btn.dataset.target = t.type;
+        btn.textContent = t.label;
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.target-tab').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          input.focus();
+        });
+        targetTabs.append(btn);
+      });
+    }
+
+    // ── WebSocket ──
+    function connectWebSocket(roomId) {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}`);
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'join', room_id: roomId }));
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        switch (data.type) {
+          case 'history':
+            renderHistory(data.messages, roomId);
+            enableComposer();
+            break;
+          case 'message':
+            appendMessage(data);
+            break;
+          case 'user_joined':
+          case 'user_left':
+            updateOnlineUsers(data);
+            break;
+          case 'online_users':
+            renderOnlineUsers(data.users);
+            break;
+          case 'agent_status':
+            renderAgentList(data.agents);
+            break;
+          case 'error':
+            console.error('WS error:', data.message);
+            break;
+        }
+      };
+
+      ws.onclose = () => {
+        if (currentRoomId === roomId) {
+          setTimeout(() => connectWebSocket(roomId), 2000);
+        }
+      };
+    }
+
+    function enableComposer() {
+      input.disabled = false;
+      sendButton.disabled = false;
+      input.focus();
+    }
+
+    // ── Render messages ──
+    function renderHistory(messages, roomId) {
+      if (currentRoomId !== roomId) return;
+      conversation.replaceChildren();
+      if (!messages.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.innerHTML = '<div class="brand-mark" aria-hidden="true">圆</div><h2>房间空空如也</h2><p>发条消息开启讨论吧！</p>';
+        conversation.append(empty);
+        renderOnlineUsers([]);
+        return;
+      }
+      for (const msg of messages) {
+        conversation.append(createMessageElement(msg));
+      }
+      scrollToBottom();
+
+      // Request online users
+      ws.send(JSON.stringify({ type: 'online_users', room_id: roomId }));
+      checkAndAddCrossExamine();
+    }
+
+    function appendMessage(data) {
+      // Remove empty state if present
+      const empty = conversation.querySelector('.empty-state');
+      if (empty) empty.remove();
+
+      conversation.append(createMessageElement(data));
+      scrollToBottom();
+      checkAndAddCrossExamine();
+    }
+
+    // ── Cross-examination ──
+    function checkAndAddCrossExamine() {
+      // Remove existing action button
+      const old = conversation.querySelector('.round-action');
+      if (old) old.remove();
+
+      const messages = conversation.querySelectorAll('.message');
+      const agentNames = new Set();
+      const latest = {};
+
+      messages.forEach(msg => {
+        const isAgent = msg.classList.contains('codex') || msg.classList.contains('hermes');
+        const isError = msg.classList.contains('error');
+        if (isAgent && !isError) {
+          const name = msg.classList.contains('codex') ? 'codex' : 'hermes';
+          agentNames.add(name);
+          if (!latest[name]) latest[name] = msg;
+        }
+      });
+
+      if (agentNames.size >= 2) {
+        const wrap = document.createElement('div');
+        wrap.className = 'round-action';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = '让他们互相回应';
+        button.addEventListener('click', () => {
+          if (ws) {
+            ws.send(JSON.stringify({ type: 'cross_examine', room_id: currentRoomId }));
+          }
+        });
+        wrap.append(button);
+        conversation.append(wrap);
+      }
+    }
+
+    function createMessageElement(msg) {
+      const node = messageTemplate.content.firstElementChild.cloneNode(true);
+      node.classList.add(msg.sender_type === 'agent' ? msg.sender_name.toLowerCase() : msg.sender_type);
+      if (msg.error) node.classList.add('error');
+
+      const avatar = node.querySelector('.message-avatar');
+      if (msg.sender_type === 'user') {
+        avatar.textContent = msg.sender_name[0].toUpperCase();
+        avatar.className = 'message-avatar avatar avatar-user';
+      } else if (msg.sender_type === 'agent') {
+        avatar.textContent = msg.sender_name[0];
+        avatar.className = 'message-avatar avatar avatar-agent';
+      } else {
+        avatar.textContent = '圆';
+        avatar.className = 'message-avatar avatar avatar-system';
+      }
+
+      node.querySelector('strong').textContent = msg.sender_name;
+      node.querySelector('time').textContent = formatTime(msg.created_at);
+      node.querySelector('.message-text').textContent = msg.content;
+      return node;
+    }
+
+    function createTypingBubble(name, text) {
+      const node = messageTemplate.content.firstElementChild.cloneNode(true);
+      node.querySelector('.message-avatar').textContent = name[0];
+      node.querySelector('.message-avatar').className = 'message-avatar avatar avatar-system';
+      node.querySelector('strong').textContent = name;
+      node.querySelector('time').textContent = '';
+      const textEl = node.querySelector('.message-text');
+      textEl.innerHTML = `<span class="typing" aria-label="正在输入"><i></i><i></i><i></i></span>`;
+      return node;
+    }
+
+    // ── Online users ──
+    function updateOnlineUsers(data) {
+      if (data.type === 'user_joined') {
+        onlineUsers.set(data.user.id, data.user);
+      } else if (data.type === 'user_left') {
+        onlineUsers.delete(data.user.id);
+      }
+      renderOnlineUsers([...onlineUsers.values()]);
+    }
+
+    function renderOnlineUsers(users) {
+      const userList = users || [...onlineUsers.values()];
+      participantStack.replaceChildren();
+
+      for (const u of userList) {
+        const span = document.createElement('span');
+        span.className = 'avatar avatar-user avatar-sm';
+        span.textContent = u.username[0].toUpperCase();
+        span.title = u.username;
+        participantStack.append(span);
+      }
+
+      // Add agent avatars
+      const agents = roomAgents[currentRoomId] || [];
+      for (const a of agents) {
+        const span = document.createElement('span');
+        span.className = 'avatar avatar-agent avatar-sm';
+        span.textContent = a.name[0];
+        span.title = a.name;
+        participantStack.append(span);
+      }
+
+      onlineCount.textContent = `${userList.length} 人在线`;
+    }
+
+    // ── Agent list in conversation sidebar (inline) ──
+    function renderAgentList(agents) {
+      // Rendered as part of online list already
+    }
+
+    // ── Send message ──
+    async function submitMessage() {
+      const text = input.value.trim();
+      if (!text || pending || !ws || !currentRoomId) return;
+
+      const activeTab = document.querySelector('.target-tab.active');
+      const target = activeTab ? activeTab.dataset.target : 'all';
+
+      pending = true;
+      sendButton.disabled = true;
+
+      ws.send(JSON.stringify({
+        type: 'message',
+        room_id: currentRoomId,
+        content: text,
+        target,
+      }));
+
+      input.value = '';
+      resizeInput();
+      setTimeout(() => { pending = false; sendButton.disabled = false; }, 500);
+    }
+
+    // ── Helpers ──
+    function formatTime(iso) {
+      const d = new Date(iso);
+      return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+
+    function resizeInput() {
+      input.style.height = 'auto';
+      input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+    }
+
+    function scrollToBottom() {
+      requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+    }
+
+    // ── Event Listeners ──
+
+    document.getElementById('mobile-menu').addEventListener('click', () => sidebar.classList.toggle('open'));
+    document.getElementById('sidebar-overlay').addEventListener('click', () => sidebar.classList.remove('open'));
+
+    input.addEventListener('input', resizeInput);
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        submitMessage();
+      }
+    });
+    sendButton.addEventListener('click', submitMessage);
+
+    // Auto-reconnect
+    setInterval(() => {
+      if (ws && ws.readyState === WebSocket.CLOSED && currentRoomId) {
+        connectWebSocket(currentRoomId);
+      }
+    }, 5000);
+
+    // ── Create Room Dialog ──
+    document.getElementById('create-room-btn').addEventListener('click', async () => {
+      // Fetch agent status and render checkboxes
+      try {
+        const res = await fetch('/api/agents/check');
+        const status = await res.json();
+        const container = document.getElementById('create-room-agents');
+        container.replaceChildren();
+        for (const [name, info] of Object.entries(status)) {
+          const label = document.createElement('label');
+          label.className = 'create-room-agent-item';
+          const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+          label.innerHTML = `
+            <input type="checkbox" value="${name}" ${info.online ? '' : 'disabled'}>
+            <div class="agent-info">
+              <span class="status-dot ${info.online ? 'online' : 'offline'}"></span>
+              <strong>${displayName}</strong>
+              <small>${info.online ? info.version : '未安装'}</small>
+            </div>
+          `;
+          container.append(label);
+        }
+      } catch {}
+      document.getElementById('create-room-dialog').showModal();
+    });
+    document.getElementById('create-room-cancel').addEventListener('click', () => {
+      document.getElementById('create-room-dialog').close();
+    });
+    document.getElementById('create-room-save').addEventListener('click', async () => {
+      const name = document.getElementById('new-room-name-chat').value.trim();
+      const topic = document.getElementById('new-room-topic-chat').value.trim();
+      if (!name) { alert('房间名称必填'); return; }
+      const res = await fetch('/api/rooms', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, topic }),
+      });
+      if (!res.ok) { alert((await res.json()).error); return; }
+      const { id: roomId } = await res.json();
+
+      // Add selected agents
+      const checked = document.querySelectorAll('#create-room-agents input:checked:not(:disabled)');
+      for (const cb of checked) {
+        const agentName = cb.value.charAt(0).toUpperCase() + cb.value.slice(1);
+        await fetch(`/api/rooms/${roomId}/agents`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: agentName, command: cb.value, prompt: '' }),
+        }).catch(() => {});
+      }
+
+      document.getElementById('new-room-name-chat').value = '';
+      document.getElementById('new-room-topic-chat').value = '';
+      document.getElementById('create-room-dialog').close();
+      await loadRooms();
+    });
+
+    // ── Add Agent Dialog ──
+    let addAgentRoomId = null;
+
+    async function openAddAgentDialog(roomId, roomName) {
+      addAgentRoomId = roomId;
+      // Fetch detected agents
+      const res = await fetch('/api/agents/check');
+      const status = await res.json();
+      const list = document.getElementById('add-agent-rooms-list');
+      list.replaceChildren();
+      const title = document.createElement('p');
+      title.style.cssText = 'font-size:13px;font-weight:700;margin:0 0 8px;';
+      title.textContent = `房间: ${roomName}`;
+      list.append(title);
+
+      for (const [name, info] of Object.entries(status)) {
+        const label = document.createElement('label');
+        label.className = 'add-agent-item';
+        const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+        label.innerHTML = `
+          <span class="status-dot ${info.online ? 'online' : 'offline'}"></span>
+          <strong>${displayName}</strong>
+          <small>${info.online ? info.version : '未安装'}</small>
+          <button class="primary-button add-agent-do" data-agent="${name}" ${info.online ? '' : 'disabled'} style="margin-left:auto;padding:4px 10px;font-size:11px">
+            ${info.online ? '添加' : '不可用'}
+          </button>
+        `;
+        const addBtn = label.querySelector('.add-agent-do');
+        if (info.online) {
+          addBtn.addEventListener('click', async () => {
+            const r = await fetch(`/api/rooms/${roomId}/agents`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ name: displayName, command: name, prompt: '' }),
+            });
+            if (r.ok) {
+              addBtn.textContent = '✅ 已添加';
+              addBtn.disabled = true;
+              if (currentRoomId === roomId) {
+                // Refresh agents in current room
+                const agentsRes = await fetch(`/api/rooms/${roomId}/agents`);
+                roomAgents[roomId] = await agentsRes.json();
+                renderTargetTabs(roomId);
+              }
+            } else {
+              alert((await r.json()).error);
+            }
+          });
+        }
+        list.append(label);
+      }
+
+      // Custom agent option
+      const customRow = document.createElement('div');
+      customRow.className = 'add-agent-custom';
+      customRow.innerHTML = `
+        <input id="chat-agent-name" maxlength="40" placeholder="自定义名称" style="flex:1" />
+        <input id="chat-agent-cmd" maxlength="40" placeholder="命令" style="flex:1" />
+        <button class="primary-button" id="chat-add-custom" style="padding:6px 10px;font-size:11px">添加</button>
+      `;
+      list.append(customRow);
+
+      customRow.querySelector('#chat-add-custom').addEventListener('click', async () => {
+        const name = document.getElementById('chat-agent-name').value.trim();
+        const command = document.getElementById('chat-agent-cmd').value.trim();
+        if (!name || !command) { alert('名称和命令必填'); return; }
+        const r = await fetch(`/api/rooms/${roomId}/agents`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name, command, prompt: '' }),
+        });
+        if (r.ok) {
+          document.getElementById('chat-agent-name').value = '';
+          document.getElementById('chat-agent-cmd').value = '';
+          customRow.querySelector('#chat-add-custom').textContent = '✅ 已添加';
+          setTimeout(() => { document.getElementById('add-agent-dialog').close(); }, 800);
+        } else {
+          alert((await r.json()).error);
+        }
+      });
+
+      document.getElementById('add-agent-dialog').showModal();
+    }
+
+    document.getElementById('add-agent-cancel').addEventListener('click', () => {
+      document.getElementById('add-agent-dialog').close();
+    });
+
+    // ── Change Password ──
+    document.getElementById('change-pwd-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById('pwd-error').textContent = '';
+      document.getElementById('pwd-old').value = '';
+      document.getElementById('pwd-new').value = '';
+      document.getElementById('change-pwd-dialog').showModal();
+    });
+    document.getElementById('pwd-cancel').addEventListener('click', () => {
+      document.getElementById('change-pwd-dialog').close();
+    });
+    document.getElementById('pwd-save').addEventListener('click', async () => {
+      const oldPassword = document.getElementById('pwd-old').value;
+      const newPassword = document.getElementById('pwd-new').value;
+      const errEl = document.getElementById('pwd-error');
+      errEl.textContent = '';
+      if (!oldPassword || !newPassword) { errEl.textContent = '请填写完整'; return; }
+      if (newPassword.length < 6) { errEl.textContent = '新密码至少 6 位'; return; }
+      const res = await fetch('/api/auth/password', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ oldPassword, newPassword }),
+      });
+      if (!res.ok) { errEl.textContent = (await res.json()).error; return; }
+      document.getElementById('change-pwd-dialog').close();
+      alert('密码修改成功');
+    });
+  </script>
+</body>
+</html>

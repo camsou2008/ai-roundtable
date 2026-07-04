@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildAgentPrompt, parseCodexOutput, parseHermesOutput } from "../server.mjs";
+import { parseCodexOutput, parseHermesOutput } from "../agent-runner.mjs";
 
 test("parseCodexOutput extracts the thread and final agent message", () => {
   const output = [
@@ -28,17 +28,4 @@ test("parseHermesOutput keeps stdout clean and reads the latest stderr session",
     response: "这是 Hermes 的观点。",
     error: "",
   });
-});
-
-test("buildAgentPrompt includes bounded context and discussion safety rules", () => {
-  const prompt = buildAgentPrompt({
-    agent: "codex",
-    topic: "长期记忆",
-    message: "给出立场",
-    context: [{ speaker: "你", text: "先独立思考" }],
-  });
-
-  assert.match(prompt, /Codex/);
-  assert.match(prompt, /长期记忆/);
-  assert.match(prompt, /不要执行命令/);
 });

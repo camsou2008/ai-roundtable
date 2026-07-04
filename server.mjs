@@ -1,14 +1,46 @@
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { initDb, listRooms, createRoom, updateRoom, deleteRoom, getRoom } from "./db.mjs";
+import {
+  handleRegister,
+  handleLogin,
+  handleLogout,
+  handleGetMe,
+  handleChangePassword,
+  handleAdminResetPassword,
+  getSessionId,
+  setSessionCookie,
+  clearSessionCookie,
+  findSession,
+  requireAdmin,
+} from "./auth.mjs";
+import {
+  createInviteCode,
+  listInviteCodes,
+  deleteInviteCode,
+  addRoomAgent,
+  listRoomAgents,
+  removeRoomAgent,
+  listAllAgents,
+  addRoomMember,
+  getRoomMembers,
+  removeRoomMember,
+  isRoomMember,
+  getUserRooms,
+  getUserRoomIds,
+  listAllUsers,
+  updateUserRole,
+  deleteUser as deleteUserDb,
+} from "./db.mjs";
+import { initWebSocket } from "./ws.mjs";
+import { checkAgent } from "./agent-runner.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const MAX_BODY_BYTES = 256 * 1024;
-const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
-const SESSION_PATTERN = /^[A-Za-z0-9_.:-]{1,160}$/;
-const STATIC_FILES = new Set(["/", "/index.html", "/styles.css", "/app.js"]);
+const PUBLIC = join(ROOT, "public");
+const STATIC_FILES = new Set(["/", "/login", "/chat", "/admin", "/styles.css"]);
 
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -16,166 +48,7 @@ const CONTENT_TYPES = {
   ".js": "text/javascript; charset=utf-8",
 };
 
-export function parseCodexOutput(stdout) {
-  let sessionId = "";
-  let response = "";
-  let error = "";
-
-  for (const line of stdout.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const event = JSON.parse(line);
-      if (event.type === "thread.started") sessionId = event.thread_id || "";
-      if (event.type === "item.completed" && event.item?.type === "agent_message") {
-        response = event.item.text || response;
-      }
-      if (event.type === "error") error = event.message || "Codex 返回错误";
-      if (event.type === "turn.failed") error = event.error?.message || error || "Codex 回合失败";
-    } catch {
-      // Ignore non-JSON diagnostic lines; the CLI contract is JSONL on stdout.
-    }
-  }
-
-  return { sessionId, response: response.trim(), error };
-}
-
-export function parseHermesOutput(stdout, stderr) {
-  const matches = [...stderr.matchAll(/(?:^|\n)session_id:\s*([^\s]+)/g)];
-  const sessionId = matches.at(-1)?.[1] || "";
-  const errorLine = stderr
-    .split("\n")
-    .find((line) => /^Error:/i.test(line.trim()));
-  const response = stdout
-    .split("\n")
-    .filter((line) => !/^Warning:\s+Unknown toolsets:/i.test(line.trim()))
-    .join("\n")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
-    .replace(/^\*\*$/gm, "")
-    .trim();
-
-  return {
-    sessionId,
-    response,
-    error: errorLine?.replace(/^Error:\s*/i, "").trim() || "",
-  };
-}
-
-export function buildAgentPrompt({ agent, topic, message, context = [] }) {
-  const identity = agent === "codex" ? "Codex" : "Hermes";
-  const transcript = context
-    .slice(-10)
-    .map((item) => `${item.speaker}: ${String(item.text).slice(0, 1800)}`)
-    .join("\n");
-
-  return [
-    `你是圆桌聊天室中的 ${identity}，正在与用户和另一位 AI 讨论。`,
-    `讨论主题：${topic || "未命名主题"}`,
-    transcript ? `最近对话：\n${transcript}` : "这是本轮首条消息。",
-    `用户指令：${message}`,
-    "直接以自己的身份发言。观点具体、简洁，可以质疑另一位参与者，但不要替其他人发言。",
-    "使用纯文本和简短条目，不要使用 Markdown 标题或粗体标记。",
-    "本轮是纯讨论：不要调用工具，不要执行命令，不要读取或修改文件。",
-  ].join("\n\n");
-}
-
-function redact(text) {
-  return String(text)
-    .replace(/(?:sk|key|token)[-_][A-Za-z0-9_-]{12,}/gi, "[REDACTED]")
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
-    .slice(-1200);
-}
-
-function runCommand(command, args, { timeoutMs = 240_000, signal } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: ROOT,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", abort);
-      fn(value);
-    };
-
-    const abort = () => {
-      child.kill("SIGTERM");
-      finish(reject, new Error("请求已取消"));
-    };
-
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      finish(reject, new Error(`${command} 响应超时`));
-    }, timeoutMs);
-
-    signal?.addEventListener("abort", abort, { once: true });
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-      if (stdout.length > MAX_OUTPUT_BYTES) child.kill("SIGTERM");
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-      if (stderr.length > MAX_OUTPUT_BYTES) child.kill("SIGTERM");
-    });
-    child.on("error", (error) => finish(reject, error));
-    child.on("close", (code) => finish(resolve, { code, stdout, stderr }));
-  });
-}
-
-async function runCodex(payload, signal) {
-  const prompt = buildAgentPrompt({ ...payload, agent: "codex" });
-  const common = ["--json", "--sandbox", "read-only", "--skip-git-repo-check", "-C", ROOT];
-  const args = payload.sessionId
-    ? ["exec", ...common, "resume", payload.sessionId, prompt]
-    : ["exec", ...common, prompt];
-  const result = await runCommand("codex", args, { signal });
-  const parsed = parseCodexOutput(result.stdout);
-
-  if (result.code !== 0 || parsed.error || !parsed.response) {
-    throw new Error(parsed.error || redact(result.stderr) || `Codex 退出码：${result.code}`);
-  }
-  return parsed;
-}
-
-async function runHermes(payload, signal) {
-  const prompt = buildAgentPrompt({ ...payload, agent: "hermes" });
-  const args = [
-    "chat",
-    "-Q",
-    "--source",
-    "tool",
-    "--max-turns",
-    "1",
-    "--pass-session-id",
-  ];
-  if (payload.sessionId) args.push("--resume", payload.sessionId);
-  args.push("-q", prompt);
-
-  const result = await runCommand("hermes", args, { signal });
-  const parsed = parseHermesOutput(result.stdout, result.stderr);
-  if (result.code !== 0 || parsed.error || !parsed.response) {
-    throw new Error(parsed.error || redact(result.stderr) || `Hermes 退出码：${result.code}`);
-  }
-  return parsed;
-}
-
-async function checkAgent(command) {
-  try {
-    const result = await runCommand(command, ["--version"], { timeoutMs: 5_000 });
-    const version = `${result.stdout}\n${result.stderr}`.trim().split("\n")[0];
-    return { online: result.code === 0, version };
-  } catch {
-    return { online: false, version: "" };
-  }
-}
+const MAX_BODY_BYTES = 256 * 1024;
 
 function sendJson(response, status, data) {
   response.writeHead(status, {
@@ -196,63 +69,331 @@ async function readJson(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-function validatePayload(payload) {
-  if (!payload || !["codex", "hermes"].includes(payload.agent)) throw new Error("未知参与者");
-  if (!String(payload.message || "").trim()) throw new Error("消息不能为空");
-  if (String(payload.message).length > 12_000) throw new Error("消息过长");
-  if (payload.sessionId && !SESSION_PATTERN.test(payload.sessionId)) throw new Error("无效的会话 ID");
-  if (payload.context && !Array.isArray(payload.context)) throw new Error("对话上下文格式错误");
+async function serveStatic(url, response) {
+  let filename;
+  if (url.pathname === "/") filename = "login.html";
+  else if (url.pathname === "/login") filename = "login.html";
+  else if (url.pathname === "/chat") filename = "chat.html";
+  else if (url.pathname === "/admin") filename = "admin.html";
+  else filename = url.pathname.slice(1);
+
+  const filePath = join(PUBLIC, filename);
+  try {
+    const content = await readFile(filePath);
+    response.writeHead(200, {
+      "content-type": CONTENT_TYPES[extname(filename)] || "application/octet-stream",
+      "cache-control": "no-cache",
+    });
+    response.end(content);
+  } catch {
+    sendJson(response, 404, { error: "页面文件不存在" });
+  }
 }
 
-export function createAppServer({ runners = { codex: runCodex, hermes: runHermes } } = {}) {
-  return createServer(async (request, response) => {
-    const url = new URL(request.url, "http://127.0.0.1");
+// ── 创建初始房间和 Agent ──
 
-    if (request.method === "GET" && url.pathname === "/api/status") {
-      const [codex, hermes] = await Promise.all([checkAgent("codex"), checkAgent("hermes")]);
-      return sendJson(response, 200, { codex, hermes });
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/chat") {
-      try {
-        const payload = await readJson(request);
-        validatePayload(payload);
-        const abortController = new AbortController();
-        request.on("aborted", () => abortController.abort());
-        const result = await runners[payload.agent](payload, abortController.signal);
-        return sendJson(response, 200, result);
-      } catch (error) {
-        return sendJson(response, 400, { error: redact(error.message || error) });
-      }
-    }
-
-    if (request.method === "GET" && url.pathname === "/favicon.ico") {
-      response.writeHead(204);
-      return response.end();
-    }
-
-    if (request.method === "GET" && STATIC_FILES.has(url.pathname)) {
-      const filename = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-      try {
-        const content = await readFile(join(ROOT, filename));
-        response.writeHead(200, {
-          "content-type": CONTENT_TYPES[extname(filename)] || "application/octet-stream",
-          "cache-control": "no-cache",
-        });
-        return response.end(content);
-      } catch {
-        return sendJson(response, 404, { error: "页面文件不存在" });
-      }
-    }
-
-    return sendJson(response, 404, { error: "未找到该路径" });
-  });
+function seedInitialData() {
+  const rooms = listRooms();
+  if (rooms.length === 0) {
+    const roomId = createRoom("AI 圆桌", "AI 应不应该拥有长期记忆？", 1);
+    addRoomMember(roomId, 1);
+    console.log("  → 已创建默认房间: AI 圆桌");
+  }
 }
+
+// ── Server ──
+
+async function handleRequest(request, response) {
+  const url = new URL(request.url, "http://127.0.0.1");
+  const sessionId = getSessionId(request);
+  const session = sessionId ? findSession(sessionId) : null;
+
+  // ── CORS ──
+  response.setHeader("access-control-allow-origin", "*");
+
+  // ── Auth API ──
+
+  if (request.method === "POST" && url.pathname === "/api/auth/register") {
+    try {
+      const body = await readJson(request);
+      const result = await handleRegister(body);
+      return sendJson(response, result.status, result.error ? { error: result.error } : { ok: true, userId: result.userId });
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/auth/login") {
+    try {
+      const body = await readJson(request);
+      const result = await handleLogin(body);
+      if (result.status === 200) {
+        setSessionCookie(response, result.sessionId);
+        return sendJson(response, 200, { user: result.user });
+      }
+      return sendJson(response, result.status, { error: result.error });
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+    handleLogout(sessionId);
+    clearSessionCookie(response);
+    return sendJson(response, 200, { ok: true });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/auth/me") {
+    const result = handleGetMe(sessionId);
+    if (result.status === 200) return sendJson(response, 200, result.user);
+    return sendJson(response, result.status, { error: result.error });
+  }
+
+  if (request.method === "PUT" && url.pathname === "/api/auth/password") {
+    try {
+      const body = await readJson(request);
+      const result = handleChangePassword(sessionId, body);
+      return sendJson(response, result.status, result.error ? { error: result.error } : { ok: true });
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message });
+    }
+  }
+
+  // ── Rooms API ──
+
+  if (request.method === "GET" && url.pathname === "/api/rooms") {
+    if (!session) return sendJson(response, 401, { error: "未登录" });
+    const rooms = getUserRooms(session.user_id);
+    return sendJson(response, 200, rooms);
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/rooms/") && url.pathname.endsWith("/members")) {
+    if (!session) return sendJson(response, 401, { error: "未登录" });
+    const roomId = Number(url.pathname.split("/")[3]);
+    const members = getRoomMembers(roomId);
+    return sendJson(response, 200, members);
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/rooms/") && url.pathname.endsWith("/agents")) {
+    if (!session) return sendJson(response, 401, { error: "未登录" });
+    const roomId = Number(url.pathname.split("/")[3]);
+    const agents = listRoomAgents(roomId);
+    return sendJson(response, 200, agents);
+  }
+
+  // ── Member room & agent management ──
+  // Any logged-in user can create a room
+  if (request.method === "POST" && url.pathname === "/api/rooms") {
+    if (!session) return sendJson(response, 401, { error: "未登录" });
+    try {
+      const body = await readJson(request);
+      if (!body.name) return sendJson(response, 400, { error: "房间名称必填" });
+      const roomId = createRoom(body.name, body.topic || body.name, session.user_id);
+      addRoomMember(roomId, session.user_id); // creator auto-joins
+      return sendJson(response, 200, { id: roomId });
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message });
+    }
+  }
+
+  // Any room member can add an agent to that room
+  if (request.method === "POST" && url.pathname.match(/^\/api\/rooms\/\d+\/agents$/)) {
+    if (!session) return sendJson(response, 401, { error: "未登录" });
+    const roomId = Number(url.pathname.split("/")[3]);
+    if (!isRoomMember(roomId, session.user_id)) {
+      return sendJson(response, 403, { error: "你不是该房间成员" });
+    }
+    try {
+      const body = await readJson(request);
+      if (!body.name || !body.command) return sendJson(response, 400, { error: "名称和命令必填" });
+      addRoomAgent(roomId, body.name, body.command, body.prompt || "", session.user_id);
+      return sendJson(response, 200, { ok: true });
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message });
+    }
+  }
+
+  // ── Agents status ──
+
+  if (request.method === "GET" && url.pathname === "/api/agents/check") {
+    if (!session) return sendJson(response, 401, { error: "未登录" });
+    const [codex, hermes] = await Promise.all([checkAgent("codex"), checkAgent("hermes")]);
+    return sendJson(response, 200, { codex, hermes });
+  }
+
+  // ── Admin API (need admin role) ──
+
+  if (url.pathname.startsWith("/api/admin")) {
+    if (!session || !requireAdmin(session)) {
+      return sendJson(response, 403, { error: "仅管理员可操作" });
+    }
+
+    // Invite codes
+    if (request.method === "GET" && url.pathname === "/api/admin/invites") {
+      return sendJson(response, 200, listInviteCodes());
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/admin/invites") {
+      const body = await readJson(request);
+      const days = body.expiresInDays || 7;
+      const code = createInviteCode(session.user_id, days);
+      return sendJson(response, 200, { code });
+    }
+
+    if (request.method === "DELETE" && url.pathname.startsWith("/api/admin/invites/")) {
+      const id = Number(url.pathname.split("/")[4]);
+      deleteInviteCode(id);
+      return sendJson(response, 200, { ok: true });
+    }
+
+    // Rooms (admin: list all)
+    if (request.method === "GET" && url.pathname === "/api/admin/rooms") {
+      return sendJson(response, 200, listRooms());
+    }
+
+    // All agents
+    if (request.method === "GET" && url.pathname === "/api/admin/agents") {
+      return sendJson(response, 200, listAllAgents());
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/admin/rooms") {
+      const body = await readJson(request);
+      if (!body.name) return sendJson(response, 400, { error: "房间名称必填" });
+      const roomId = createRoom(body.name, body.topic || body.name, session.user_id);
+      // Admin自动加入
+      addRoomMember(roomId, session.user_id);
+      return sendJson(response, 200, { id: roomId });
+    }
+
+    if (request.method === "PUT" && url.pathname.startsWith("/api/admin/rooms/")) {
+      const id = Number(url.pathname.split("/")[4]);
+      const body = await readJson(request);
+      updateRoom(id, body.name, body.topic || "");
+      return sendJson(response, 200, { ok: true });
+    }
+
+    if (request.method === "DELETE" && url.pathname.startsWith("/api/admin/rooms/")) {
+      const id = Number(url.pathname.split("/")[4]);
+      deleteRoom(id);
+      return sendJson(response, 200, { ok: true });
+    }
+
+    // Add member to room
+    if (request.method === "POST" && url.pathname.endsWith("/members")) {
+      const parts = url.pathname.split("/");
+      const roomId = Number(parts[3]);
+      const body = await readJson(request);
+      addRoomMember(roomId, body.user_id);
+      return sendJson(response, 200, { ok: true });
+    }
+
+    // Remove member from room
+    if (request.method === "DELETE" && url.pathname.match(/^\/api\/admin\/rooms\/\d+\/members\/\d+$/)) {
+      const parts = url.pathname.split("/");
+      const roomId = Number(parts[3]);
+      const userId = Number(parts[5]);
+      removeRoomMember(roomId, userId);
+      return sendJson(response, 200, { ok: true });
+    }
+
+    // Room agents
+    if (request.method === "POST" && url.pathname.match(/^\/api\/admin\/rooms\/\d+\/agents$/)) {
+      const parts = url.pathname.split("/");
+      const roomId = Number(parts[4]);
+      const body = await readJson(request);
+      if (!body.name || !body.command) return sendJson(response, 400, { error: "名称和命令必填" });
+      addRoomAgent(roomId, body.name, body.command, body.prompt || "", session.user_id);
+      return sendJson(response, 200, { ok: true });
+    }
+
+    if (request.method === "DELETE" && url.pathname.match(/^\/api\/admin\/agents\/\d+$/)) {
+      const id = Number(url.pathname.split("/")[4]);
+      removeRoomAgent(id);
+      return sendJson(response, 200, { ok: true });
+    }
+
+    // Users
+    if (request.method === "GET" && url.pathname === "/api/admin/users") {
+      return sendJson(response, 200, listAllUsers());
+    }
+
+    if (request.method === "PUT" && url.pathname.match(/^\/api\/admin\/users\/\d+\/role$/)) {
+      const id = Number(url.pathname.split("/")[4]);
+      const body = await readJson(request);
+      if (!["admin", "member"].includes(body.role)) {
+        return sendJson(response, 400, { error: "无效角色" });
+      }
+      updateUserRole(id, body.role);
+      return sendJson(response, 200, { ok: true });
+    }
+
+    if (request.method === "DELETE" && url.pathname.match(/^\/api\/admin\/users\/\d+$/)) {
+      const id = Number(url.pathname.split("/")[4]);
+      if (id === session.user_id) {
+        return sendJson(response, 400, { error: "不能删除自己" });
+      }
+      deleteUserDb(id);
+      return sendJson(response, 200, { ok: true });
+    }
+
+    // User room assignment
+    if (request.method === "GET" && url.pathname.match(/^\/api\/admin\/users\/\d+\/rooms$/)) {
+      const id = Number(url.pathname.split("/")[4]);
+      const allRooms = listRooms();
+      const userRoomIds = getUserRoomIds(id);
+      const result = allRooms.map(r => ({ ...r, assigned: userRoomIds.includes(r.id) }));
+      return sendJson(response, 200, result);
+    }
+
+    if (request.method === "PUT" && url.pathname.match(/^\/api\/admin\/users\/\d+\/rooms$/)) {
+      const id = Number(url.pathname.split("/")[4]);
+      const body = await readJson(request);
+      const roomIds = body.room_ids || [];
+      // Remove from all rooms first, then add selected
+      const currentRooms = getUserRoomIds(id);
+      for (const rid of currentRooms) {
+        if (!roomIds.includes(rid)) removeRoomMember(rid, id);
+      }
+      for (const rid of roomIds) {
+        addRoomMember(rid, id);
+      }
+      return sendJson(response, 200, { ok: true });
+    }
+
+    // Admin reset user password
+    if (request.method === "PUT" && url.pathname.match(/^\/api\/admin\/users\/\d+\/password$/)) {
+      const id = Number(url.pathname.split("/")[4]);
+      const body = await readJson(request);
+      const result = handleAdminResetPassword(id, body.newPassword);
+      return sendJson(response, result.status, result.error ? { error: result.error } : { ok: true });
+    }
+  }
+
+  // ── Static files ──
+
+  if (request.method === "GET" && STATIC_FILES.has(url.pathname)) {
+    return serveStatic(url, response);
+  }
+
+  return sendJson(response, 404, { error: "未找到该路径" });
+}
+
+// ── Main ──
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
   const port = Number(process.env.PORT || 4173);
-  createAppServer().listen(port, "127.0.0.1", () => {
-    console.log(`Roundtable running at http://127.0.0.1:${port}`);
+
+  console.log("🌀 初始化数据库...");
+  initDb();
+  seedInitialData();
+  console.log("✅ 数据库就绪");
+
+  const server = createServer(handleRequest);
+  initWebSocket(server);
+
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`󰀃 Roundtable v2 运行中 http://0.0.0.0:${port}`);
+    console.log(`   默认管理员: admin / admin123`);
   });
 }

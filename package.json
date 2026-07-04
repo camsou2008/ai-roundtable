@@ -1,10 +1,15 @@
 {
-  "name": "local-roundtable",
-  "version": "1.0.0",
+  "name": "ai-roundtable",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "setup": "node server.mjs --init-only"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "ws": "^8.18.0"
   }
 }

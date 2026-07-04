@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>圆桌 · 登录</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="auth-page">
+  <div class="auth-container">
+    <div class="auth-brand">
+      <div class="brand-mark" aria-hidden="true">圆</div>
+      <div>
+        <strong>圆桌</strong>
+        <span>Multi-AI discussion room</span>
+      </div>
+    </div>
+
+    <!-- Login form -->
+    <form id="login-form" class="auth-form">
+      <h2>登录</h2>
+      <label for="login-username">用户名</label>
+      <input id="login-username" maxlength="20" required autocomplete="username" />
+      <label for="login-password">密码</label>
+      <input id="login-password" type="password" required autocomplete="current-password" />
+      <div id="login-error" class="auth-error"></div>
+      <button class="primary-button" type="submit">进入圆桌</button>
+      <p class="auth-switch">还没有账号？<a href="#" id="show-register">使用邀请码注册</a></p>
+    </form>
+
+    <!-- Register form -->
+    <form id="register-form" class="auth-form" style="display:none">
+      <h2>注册</h2>
+      <label for="reg-username">用户名</label>
+      <input id="reg-username" maxlength="20" required />
+      <label for="reg-password">密码（至少 6 位）</label>
+      <input id="reg-password" type="password" minlength="6" required />
+      <label for="reg-code">邀请码</label>
+      <input id="reg-code" maxlength="20" required placeholder="管理员给你的邀请码" />
+      <div id="reg-error" class="auth-error"></div>
+      <button class="primary-button" type="submit">注册并登录</button>
+      <p class="auth-switch">已有账号？<a href="#" id="show-login">去登录</a></p>
+    </form>
+  </div>
+
+  <script>
+    const loginForm = document.getElementById('login-form');
+    const registerForm = document.getElementById('register-form');
+    const loginError = document.getElementById('login-error');
+    const regError = document.getElementById('reg-error');
+
+    document.getElementById('show-register').addEventListener('click', (e) => {
+      e.preventDefault();
+      loginForm.style.display = 'none';
+      registerForm.style.display = 'block';
+      loginError.textContent = '';
+    });
+
+    document.getElementById('show-login').addEventListener('click', (e) => {
+      e.preventDefault();
+      registerForm.style.display = 'none';
+      loginForm.style.display = 'block';
+      regError.textContent = '';
+    });
+
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      loginError.textContent = '';
+      const username = document.getElementById('login-username').value.trim();
+      const password = document.getElementById('login-password').value;
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) { loginError.textContent = data.error; return; }
+        window.location.href = data.user.role === 'admin' ? '/admin' : '/chat';
+      } catch (err) {
+        loginError.textContent = '连接失败：' + err.message;
+      }
+    });
+
+    registerForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      regError.textContent = '';
+      const username = document.getElementById('reg-username').value.trim();
+      const password = document.getElementById('reg-password').value;
+      const inviteCode = document.getElementById('reg-code').value.trim().toUpperCase();
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ username, password, inviteCode }),
+        });
+        const data = await res.json();
+        if (!res.ok) { regError.textContent = data.error; return; }
+        // Auto-login after registration
+        const loginRes = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const loginData = await loginRes.json();
+        if (!loginRes.ok) { regError.textContent = loginData.error; return; }
+        window.location.href = '/chat';
+      } catch (err) {
+        regError.textContent = '连接失败：' + err.message;
+      }
+    });
+
+    // If already logged in, redirect
+    fetch('/api/auth/me').then(res => {
+      if (res.ok) {
+        res.json().then(user => {
+          window.location.href = user.role === 'admin' ? '/admin' : '/chat';
+        });
+      }
+    }).catch(() => {});
+
+    // Pre-fill invite code from URL ?code=XXX
+    const urlCode = new URLSearchParams(location.search).get('code');
+    if (urlCode) {
+      document.getElementById('reg-code').value = urlCode.toUpperCase();
+      // Switch to register form
+      document.getElementById('login-form').style.display = 'none';
+      document.getElementById('register-form').style.display = 'block';
+    }
+  </script>
+</body>
+</html>

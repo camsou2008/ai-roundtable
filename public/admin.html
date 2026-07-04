@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>圆桌 · 管理后台</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="admin-shell">
+    <header class="admin-header">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true">圆</div>
+        <div>
+          <strong>圆桌管理</strong>
+          <span id="admin-user"></span>
+        </div>
+      </div>
+      <div class="admin-header-actions">
+        <a href="#" id="admin-change-pwd" class="secondary-button" style="font-size:11px">密码</a>
+        <a href="/chat" class="secondary-button">聊天室</a>
+        <a href="#" id="admin-logout" class="secondary-button">退出</a>
+      </div>
+    </header>
+
+    <div class="admin-tabs">
+      <button class="admin-tab active" data-panel="rooms">🏠 房间管理</button>
+      <button class="admin-tab" data-panel="agents">🤖 AI Agent 管理</button>
+      <button class="admin-tab" data-panel="users">👥 用户管理</button>
+      <button class="admin-tab" data-panel="invites">🔑 邀请码</button>
+    </div>
+
+    <div class="admin-content">
+      <!-- Rooms Panel -->
+      <div class="admin-panel active" id="panel-rooms">
+        <div class="panel-header">
+          <h2>房间管理</h2>
+          <button class="primary-button" id="create-room-btn">＋ 创建房间</button>
+        </div>
+        <table class="admin-table">
+          <thead><tr><th>ID</th><th>名称</th><th>话题</th><th>创建时间</th><th>操作</th></tr></thead>
+          <tbody id="rooms-table-body"></tbody>
+        </table>
+
+        <div class="panel-subsection">
+          <h3>创建房间</h3>
+          <form id="create-room-form" class="admin-form">
+            <label>房间名称 <input id="new-room-name" maxlength="60" required /></label>
+            <label>讨论话题 <input id="new-room-topic" maxlength="120" /></label>
+            <button class="primary-button" type="submit">创建</button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Agents Panel -->
+      <div class="admin-panel" id="panel-agents" style="display:none">
+        <div class="panel-header">
+          <h2>AI Agent 管理</h2>
+        </div>
+
+        <!-- Drag area: agents + rooms -->
+        <div class="agent-drag-area">
+          <div class="agent-source-panel">
+            <h3>可用 Agent</h3>
+            <p class="panel-hint">拖拽到右侧房间中添加</p>
+            <div id="agent-source-list" class="agent-source-list">
+              <div class="agent-card draggable" draggable="true" data-name="Codex" data-command="codex">
+                <span class="status-dot" id="src-codex-dot"></span>
+                <strong>Codex</strong>
+                <small class="agent-version" id="src-codex-ver">检测中</small>
+              </div>
+              <div class="agent-card draggable" draggable="true" data-name="Hermes" data-command="hermes">
+                <span class="status-dot" id="src-hermes-dot"></span>
+                <strong>Hermes</strong>
+                <small class="agent-version" id="src-hermes-ver">检测中</small>
+              </div>
+            </div>
+            <div class="agent-custom-form">
+              <h4>自定义 Agent</h4>
+              <div class="custom-agent-row">
+                <input id="custom-agent-name" maxlength="40" placeholder="名称" />
+                <input id="custom-agent-cmd" maxlength="40" placeholder="命令" />
+                <button class="primary-button" id="add-custom-agent">添加</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="room-drop-panel">
+            <h3>房间</h3>
+            <p class="panel-hint">将 Agent 拖放到房间上</p>
+            <div id="room-drop-zones" class="room-drop-list"></div>
+          </div>
+        </div>
+
+        <!-- Existing agents table -->
+        <div class="panel-subsection">
+          <h3>已有 Agent 分配</h3>
+          <table class="admin-table">
+            <thead><tr><th>名称</th><th>命令</th><th>所属房间</th><th>操作</th></tr></thead>
+            <tbody id="agents-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Users Panel -->
+      <div class="admin-panel" id="panel-users" style="display:none">
+        <div class="panel-header">
+          <h2>用户管理</h2>
+        </div>
+        <table class="admin-table">
+          <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>加入房间数</th><th>注册时间</th><th>操作</th></tr></thead>
+          <tbody id="users-table-body"></tbody>
+        </table>
+      </div>
+
+      <!-- Invites Panel -->
+      <div class="admin-panel" id="panel-invites" style="display:none">
+        <div class="panel-header">
+          <h2>邀请码管理</h2>
+          <button class="primary-button" id="generate-invite-btn">＋ 生成邀请码</button>
+        </div>
+        <table class="admin-table">
+          <thead><tr><th>邀请码</th><th>创建者</th><th>过期时间</th><th>使用人</th><th>使用时间</th><th>操作</th></tr></thead>
+          <tbody id="invites-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Room Assignment Dialog -->
+  <dialog id="assign-dialog">
+    <form method="dialog">
+      <h2>分配房间</h2>
+      <p style="color:var(--muted);font-size:13px;margin:-10px 0 16px">勾选该用户可访问的房间</p>
+      <div id="assign-room-list" class="assign-room-list"></div>
+      <div class="dialog-actions">
+        <button class="secondary-button" id="assign-cancel-btn" type="button">取消</button>
+        <button class="primary-button" id="assign-save-btn" type="button">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    let currentUser = null;
+    let allRooms = [];
+
+    function showError(msg) { alert(msg); }
+
+    // ── Auth ──
+    fetch('/api/auth/me')
+      .then(res => {
+        if (!res.ok) { window.location.href = '/login'; return; }
+        return res.json();
+      })
+      .then(user => {
+        if (!user) return;
+        if (user.role !== 'admin') { window.location.href = '/chat'; return; }
+        currentUser = user;
+        document.getElementById('admin-user').textContent = `管理员: ${user.username}`;
+        loadAll();
+      })
+      .catch(() => { window.location.href = '/login'; });
+
+    document.getElementById('admin-logout').addEventListener('click', (e) => {
+      e.preventDefault();
+      fetch('/api/auth/logout', { method: 'POST' }).then(() => { window.location.href = '/login'; });
+    });
+
+    // ── Tabs ──
+    document.querySelectorAll('.admin-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.admin-panel').forEach(p => p.style.display = 'none');
+        tab.classList.add('active');
+        document.getElementById(`panel-${tab.dataset.panel}`).style.display = 'block';
+        if (tab.dataset.panel === 'agents') {
+          setupDraggable();
+          checkAgentStatus();
+        }
+      });
+    });
+
+    // ── Load all ──
+    async function loadAll() {
+      await Promise.all([loadRooms(), loadAgents(), loadUsers(), loadInvites()]);
+    }
+
+    // ── Rooms ──
+    async function loadRooms() {
+      const res = await fetch('/api/admin/rooms');
+      allRooms = await res.json();
+      const tbody = document.getElementById('rooms-table-body');
+      tbody.replaceChildren();
+      for (const room of allRooms) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${room.id}</td>
+          <td>${room.name}</td>
+          <td>${room.topic || '-'}</td>
+          <td>${room.created_at}</td>
+          <td><button class="danger-button" data-id="${room.id}">删除</button></td>
+        `;
+        tr.querySelector('.danger-button').addEventListener('click', () => deleteRoom(room.id));
+        tbody.append(tr);
+      }
+
+      renderDropZones();
+    }
+
+    async function deleteRoom(id) {
+      if (!confirm('确定删除该房间？所有消息也将被删除。')) return;
+      await fetch(`/api/admin/rooms/${id}`, { method: 'DELETE' });
+      loadRooms();
+    }
+
+    document.getElementById('create-room-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('new-room-name').value.trim();
+      const topic = document.getElementById('new-room-topic').value.trim();
+      const res = await fetch('/api/admin/rooms', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, topic }),
+      });
+      if (!res.ok) { showError((await res.json()).error); return; }
+      document.getElementById('new-room-name').value = '';
+      document.getElementById('new-room-topic').value = '';
+      loadRooms();
+    });
+
+    // ── Agents ──
+    async function loadAgents() {
+      const res = await fetch('/api/admin/agents');
+      const agents = await res.json();
+      const tbody = document.getElementById('agents-table-body');
+      tbody.replaceChildren();
+      for (const a of agents) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${a.name}</td>
+          <td><code>${a.command}</code></td>
+          <td>${a.room_name}</td>
+          <td><button class="danger-button" data-id="${a.id}">移除</button></td>
+        `;
+        tr.querySelector('.danger-button').addEventListener('click', () => removeAgent(a.id));
+        tbody.append(tr);
+      }
+    }
+
+    async function removeAgent(id) {
+      if (!confirm('确定移除该 Agent？')) return;
+      await fetch(`/api/admin/agents/${id}`, { method: 'DELETE' });
+      loadAgents();
+    }
+
+    // ── Agent drag-and-drop ──
+
+    // Check agent statuses
+    async function checkAgentStatus() {
+      try {
+        const res = await fetch('/api/agents/check');
+        const status = await res.json();
+        for (const [name, info] of Object.entries(status)) {
+          const dot = document.getElementById(`src-${name}-dot`);
+          const ver = document.getElementById(`src-${name}-ver`);
+          if (dot) dot.className = `status-dot ${info.online ? 'online' : 'offline'}`;
+          if (ver) ver.textContent = info.online ? info.version : '未安装';
+        }
+      } catch {}
+    }
+
+    // Render drop zones
+    function renderDropZones() {
+      const container = document.getElementById('room-drop-zones');
+      container.replaceChildren();
+      // Update room-select too for custom form
+      for (const room of allRooms) {
+        const zone = document.createElement('div');
+        zone.className = 'drop-zone';
+        zone.dataset.roomId = room.id;
+        zone.innerHTML = `<div class="drop-zone-name">${room.name}</div><div class="drop-zone-hint">拖放 Agent 到此</div>`;
+
+        zone.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          zone.classList.add('drag-over');
+        });
+        zone.addEventListener('dragleave', () => {
+          zone.classList.remove('drag-over');
+        });
+        zone.addEventListener('drop', async (e) => {
+          e.preventDefault();
+          zone.classList.remove('drag-over');
+          const name = e.dataTransfer.getData('text/agent-name');
+          const command = e.dataTransfer.getData('text/agent-command');
+          if (!name || !command) return;
+          const res = await fetch(`/api/admin/rooms/${room.id}/agents`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name, command, prompt: '' }),
+          });
+          if (res.ok) {
+            zone.innerHTML = `<div class="drop-zone-name">${room.name}</div><div class="drop-zone-hint added">✅ ${name} 已添加</div>`;
+            setTimeout(() => renderDropZones(), 1500);
+            loadAgents();
+          } else {
+            const err = await res.json();
+            alert(err.error || '添加失败');
+          }
+        });
+        container.append(zone);
+      }
+    }
+
+    // Setup draggable cards
+    function setupDraggable() {
+      document.querySelectorAll('.agent-card.draggable').forEach(card => {
+        card.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('text/agent-name', card.dataset.name);
+          e.dataTransfer.setData('text/agent-command', card.dataset.command);
+          card.classList.add('dragging');
+        });
+        card.addEventListener('dragend', () => {
+          card.classList.remove('dragging');
+        });
+      });
+    }
+
+    // Custom agent form
+    document.getElementById('add-custom-agent').addEventListener('click', async () => {
+      const name = document.getElementById('custom-agent-name').value.trim();
+      const command = document.getElementById('custom-agent-cmd').value.trim();
+      if (!name || !command) { alert('名称和命令必填'); return; }
+      // Drop to first room, or show a prompt
+      if (allRooms.length === 0) { alert('请先创建房间'); return; }
+      const roomId = allRooms[0].id;
+      const res = await fetch(`/api/admin/rooms/${roomId}/agents`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, command, prompt: '' }),
+      });
+      if (res.ok) {
+        document.getElementById('custom-agent-name').value = '';
+        document.getElementById('custom-agent-cmd').value = '';
+        loadAgents();
+      } else {
+        alert((await res.json()).error);
+      }
+    });
+
+    // ── Invites ──
+    async function loadInvites() {
+      const res = await fetch('/api/admin/invites');
+      const invites = await res.json();
+      const tbody = document.getElementById('invites-table-body');
+      tbody.replaceChildren();
+      for (const inv of invites) {
+        const tr = document.createElement('tr');
+        const used = inv.used_by ? '✅' : '—';
+        tr.innerHTML = `
+          <td><code>${inv.code}</code></td>
+          <td>${inv.creator_name}</td>
+          <td>${inv.expires_at}</td>
+          <td>${inv.used_by_name || '—'}</td>
+          <td>${inv.used_at || '—'}</td>
+          <td><button class="danger-button" data-id="${inv.id}">删除</button></td>
+        `;
+        tr.querySelector('.danger-button').addEventListener('click', () => deleteInvite(inv.id));
+        tbody.append(tr);
+      }
+    }
+
+    async function deleteInvite(id) {
+      await fetch(`/api/admin/invites/${id}`, { method: 'DELETE' });
+      loadInvites();
+    }
+
+    document.getElementById('generate-invite-btn').addEventListener('click', async () => {
+      const res = await fetch('/api/admin/invites', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expiresInDays: 7 }),
+      });
+      const { code } = await res.json();
+      const regLink = `${location.origin}/login?code=${code}`;
+      await navigator.clipboard.writeText(regLink);
+      alert(`✅ 注册链接已复制到剪贴板：\n${regLink}\n\n直接发给别人，对方打开即可注册。`);
+      loadInvites();
+    });
+
+    // ── Users ──
+    async function loadUsers() {
+      const res = await fetch('/api/admin/users');
+      const users = await res.json();
+      const tbody = document.getElementById('users-table-body');
+      tbody.replaceChildren();
+      for (const u of users) {
+        const tr = document.createElement('tr');
+        const isMe = currentUser && u.id === currentUser.id;
+        tr.innerHTML = `
+          <td>${u.id}</td>
+          <td>${u.username} ${isMe ? '(自己)' : ''}</td>
+          <td><span class="role-badge ${u.role}">${u.role === 'admin' ? '管理员' : '成员'}</span></td>
+          <td>${u.room_count}</td>
+          <td>${u.created_at}</td>
+          <td class="user-actions">
+            ${isMe ? '<span class="muted">当前用户</span>' : `
+              <button class="secondary-button assign-room-btn" data-id="${u.id}">分配房间</button>
+              <button class="secondary-button reset-pwd-btn" data-id="${u.id}">重置密码</button>
+              <button class="secondary-button" data-id="${u.id}" data-role="${u.role === 'admin' ? 'member' : 'admin'}">
+                ${u.role === 'admin' ? '降为成员' : '升为管理员'}
+              </button>
+              <button class="danger-button" data-id="${u.id}">删除</button>
+            `}
+          </td>
+        `;
+        if (!isMe) {
+          const assignBtn = tr.querySelector('.assign-room-btn');
+          if (assignBtn) assignBtn.addEventListener('click', () => openAssignDialog(u.id));
+          const resetPwdBtn = tr.querySelector('.reset-pwd-btn');
+          if (resetPwdBtn) resetPwdBtn.addEventListener('click', () => openResetPwdDialog(u.id, u.username));
+          const roleBtn = tr.querySelector('.secondary-button:not(.assign-room-btn)');
+          if (roleBtn) roleBtn.addEventListener('click', () => changeRole(u.id, roleBtn.dataset.role));
+          const delBtn = tr.querySelector('.danger-button');
+          if (delBtn) delBtn.addEventListener('click', () => deleteUser(u.id));
+        }
+        tbody.append(tr);
+      }
+    }
+
+    async function changeRole(id, role) {
+      const label = role === 'admin' ? '管理员' : '成员';
+      if (!confirm(`确定将该用户设为${label}？`)) return;
+      const res = await fetch(`/api/admin/users/${id}/role`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ role }),
+      });
+      if (!res.ok) { alert((await res.json()).error); return; }
+      loadUsers();
+    }
+
+    async function deleteUser(id) {
+      if (!confirm('确定删除该用户？此操作不可恢复。')) return;
+      const res = await fetch(`/api/admin/users/${id}`, { method: 'DELETE' });
+      if (!res.ok) { alert((await res.json()).error); return; }
+      loadUsers();
+    }
+
+    // ── Room Assignment Dialog ──
+    let assignUserId = null;
+
+    async function openAssignDialog(userId) {
+      assignUserId = userId;
+      const res = await fetch(`/api/admin/users/${userId}/rooms`);
+      const rooms = await res.json();
+      const list = document.getElementById('assign-room-list');
+      list.replaceChildren();
+      for (const r of rooms) {
+        const label = document.createElement('label');
+        label.className = 'assign-room-item';
+        label.innerHTML = `<input type="checkbox" value="${r.id}" ${r.assigned ? 'checked' : ''}> ${r.name}`;
+        list.append(label);
+      }
+      const user = document.querySelector(`#users-table-body tr td:first-child`); // not reliable, use username from data
+      document.getElementById('assign-dialog').showModal();
+    }
+
+    document.getElementById('assign-save-btn').addEventListener('click', async () => {
+      const checks = document.querySelectorAll('#assign-room-list input:checked');
+      const roomIds = Array.from(checks).map(c => Number(c.value));
+      const res = await fetch(`/api/admin/users/${assignUserId}/rooms`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ room_ids: roomIds }),
+      });
+      if (res.ok) {
+        document.getElementById('assign-dialog').close();
+        loadUsers();
+      } else {
+        alert((await res.json()).error);
+      }
+    });
+
+    document.getElementById('assign-cancel-btn').addEventListener('click', () => {
+      document.getElementById('assign-dialog').close();
+    });
+
+    // ── Reset Password Dialog ──
+    function openResetPwdDialog(userId, username) {
+      const newPwd = prompt(`将 ${username} 的密码重置为：`, '123456');
+      if (!newPwd) return;
+      if (newPwd.length < 6) { alert('密码至少 6 位'); return; }
+      fetch(`/api/admin/users/${userId}/password`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ newPassword: newPwd }),
+      }).then(res => {
+        if (res.ok) alert(`✅ ${username} 的密码已重置为：${newPwd}`);
+        else res.json().then(d => alert(d.error));
+      });
+    }
+
+    // ── Admin change own password ──
+    document.getElementById('admin-change-pwd').addEventListener('click', (e) => {
+      e.preventDefault();
+      const oldPwd = prompt('当前密码：');
+      if (!oldPwd) return;
+      const newPwd = prompt('新密码（至少 6 位）：');
+      if (!newPwd || newPwd.length < 6) { alert('密码至少 6 位'); return; }
+      fetch('/api/auth/password', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ oldPassword: oldPwd, newPassword: newPwd }),
+      }).then(res => {
+        if (res.ok) alert('✅ 密码修改成功');
+        else res.json().then(d => alert(d.error));
+      });
+    });
+  </script>
+</body>
+</html>
