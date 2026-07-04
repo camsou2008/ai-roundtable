@@ -160,10 +160,14 @@ function handleLeave(ws) {
     for (const client of clients) {
       if (client.ws === ws) {
         clients.delete(client);
-        broadcast(roomId, {
-          type: "user_left",
-          user: { id: client.user.id, username: client.user.username },
-        });
+        // Only broadcast user_left if no more connections from this user remain
+        const stillConnected = [...clients].some(c => c.user.id === client.user.id);
+        if (!stillConnected) {
+          broadcast(roomId, {
+            type: "user_left",
+            user: { id: client.user.id, username: client.user.username },
+          });
+        }
         return;
       }
     }
@@ -174,9 +178,13 @@ function handleOnlineUsers(ws, data) {
   const roomId = data.room_id;
   if (!roomId) return;
   const clients = getRoomClients(roomId);
+  const seen = new Set();
   const users = [];
   for (const client of clients) {
-    users.push({ id: client.user.id, username: client.user.username });
+    if (!seen.has(client.user.id)) {
+      seen.add(client.user.id);
+      users.push({ id: client.user.id, username: client.user.username });
+    }
   }
   ws.send(JSON.stringify({ type: "online_users", users }));
 }
