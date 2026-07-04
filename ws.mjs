@@ -5,6 +5,7 @@ import {
   getMessages,
   listRoomAgents,
   isRoomMember,
+  addRoomMember,
   getRoom,
 } from "./db.mjs";
 import { runAgent, checkAgent } from "./agent-runner.mjs";
@@ -118,7 +119,15 @@ function handleMessage(ws, user, data) {
 function handleJoin(ws, user, data) {
   const roomId = data.room_id;
   const room = getRoom(roomId);
-  if (!room || !isRoomMember(roomId, user.id)) {
+  if (!room) {
+    ws.send(JSON.stringify({ type: "error", message: "房间不存在" }));
+    return;
+  }
+  // Admin auto-joins any room
+  if (user.role === "admin" && !isRoomMember(roomId, user.id)) {
+    addRoomMember(roomId, user.id);
+  }
+  if (!isRoomMember(roomId, user.id)) {
     ws.send(JSON.stringify({ type: "error", message: "无权加入该房间" }));
     return;
   }

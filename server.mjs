@@ -163,7 +163,8 @@ async function handleRequest(request, response) {
 
   if (request.method === "GET" && url.pathname === "/api/rooms") {
     if (!session) return sendJson(response, 401, { error: "未登录" });
-    const rooms = getUserRooms(session.user_id);
+    // Admin sees all rooms; regular users see only their joined rooms
+    const rooms = session.role === "admin" ? listRooms() : getUserRooms(session.user_id);
     return sendJson(response, 200, rooms);
   }
 

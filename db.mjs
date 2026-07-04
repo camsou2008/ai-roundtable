@@ -291,6 +291,6 @@ export function getMessages(roomId, limit = 50, beforeId = null) {
   }
   return db.prepare(`
     SELECT id, room_id, sender_type, sender_id, sender_name, content, created_at
-    FROM messages WHERE room_id = ? ORDER BY id ASC LIMIT ?
-  `).all(roomId, limit);
+    FROM messages WHERE room_id = ? ORDER BY id DESC LIMIT ?
+  `).all(roomId, limit).reverse();
 }
